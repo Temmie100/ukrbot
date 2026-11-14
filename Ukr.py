@@ -104,8 +104,7 @@ async def cmd_casino(message: Message, command: CommandObject):
         ("😂", "😂", "😂"),  # 3
         ("😒", "😒"),        # 2
         ("👍", "👍"),        # 2
-        ("🙊",),             # 1
-        ("👌",)              # 1
+        ("🙊", "🙊"),        # 2
     ]
     all_emojis = []
     for item in pool_templates:

@@ -1,5 +1,5 @@
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart, Command, CommandObject
 from aiogram.fsm.storage.memory import MemoryStorage
 from flask import Flask
@@ -8,7 +8,7 @@ import asyncio
 import os
 import random
 import time
-from collections import defaultdict
+from collections import defaultdict, Counter
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -38,15 +38,193 @@ last_farm_time = {}
 
 FARM_COOLDOWN = 3600  # 1 година
 
+# Сховище для активних ігор у казино: {message_id: game_data}
+active_casino_games = {}
 
-# ================== Команди ==================
+
+# ================== Команди казино ==================
+
+@router.message(Command("casino"))
+async def cmd_casino(message: Message, command: CommandObject):
+    user_id = message.from_user.id
+    
+    if not command.args:
+        await message.answer(
+            "Бля, ось так пиши:\n"
+            "<code>/casino сума</code>\n\n"
+            "Приклад: <code>/casino 100</code>\n",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        amount = int(command.args)
+    except ValueError:
+        await message.answer("Сума повинна бути числом.")
+        return
+
+    if amount < 10:
+        await message.answer("Мінімальна ставка — від 10$!")
+        return
+
+    balance = crypto_balances.get(user_id, 0)
+    if balance < amount:
+        await message.answer(f"Недостаточно доларів. У тебе: {balance}")
+        return
+
+    # Спиסת ставка одразу
+    crypto_balances[user_id] = balance - amount
+
+    # Генеруємо набір із 9 смайликів згідно з твоїм правилом:
+    # 3 одного, 2 другого, 2 третього, 1 четвертого, 1 п'ятого
+    pool_templates = [
+        ("😂", "😂", "😂"),  # 3
+        ("😒", "😒"),        # 2
+        ("👍", "👍"),        # 2
+        ("🙊",),             # 1
+        ("👌",)              # 1
+    ]
+    all_emojis = []
+    for item in pool_templates:
+        all_emojis.extend(item)
+    
+    random.shuffle(all_emojis)  # Перемішуємо для випадкового розташування у сітці 3x3
+
+    # Створюємо клавіатуру 3х3 з чорними квадратами
+    keyboard_rows = []
+    for r in range(3):
+        row = []
+        for c in range(3):
+            idx = r * 3 + c
+            row.append(InlineKeyboardButton(text="⬛", callback_data=f"cas_{user_id}_{idx}"))
+        keyboard_rows.append(row)
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+    sent_msg = await message.answer(
+        f" Ставка: <b>{amount} $</b>\n"
+        f"Відкрийте 3 ячейки.",
+        reply_markup=markup,
+        parse_mode="HTML"
+    )
+
+    # Зберігаємо дані гри
+    active_casino_games[sent_msg.message_id] = {
+        "user_id": user_id,
+        "amount": amount,
+        "emojis": all_emojis,  # прихована матриця 9 емодзі
+        "opened": set()        # які індекси вже відкрив гравець
+    }
+
+
+@router.callback_query(F.data.startswith("cas_"))
+async def process_casino_click(callback: CallbackQuery):
+    data_parts = callback.data.split("_")
+    owner_id = int(data_parts[1])
+    cell_idx = int(data_parts[2])
+    user_id = callback.from_user.id
+
+    if user_id != owner_id:
+        await callback.answer("Це не твоя гра, йолоп!", show_alert=True)
+        return
+
+    msg = callback.message
+    game = active_casino_games.get(msg.message_id)
+
+    if not game:
+        await callback.answer(" Ця гра вже завершена.", show_alert=True)
+        return
+
+    if cell_idx in game["opened"]:
+        await callback.answer("Ця ячейка вже відкрита!")
+        return
+
+    game["opened"].add(cell_idx)
+    opened_count = len(game["opened"])
+
+    # Якщо відкрив менше 3 ячеєк — оновлюємо сітку (показуємо відкриті та закриті)
+    if opened_count < 3:
+        keyboard_rows = []
+        for r in range(3):
+            row = []
+            for c in range(3):
+                idx = r * 3 + c
+                if idx in game["opened"]:
+                    row.append(InlineKeyboardButton(text=game["emojis"][idx], callback_data="noop"))
+                else:
+                    row.append(InlineKeyboardButton(text="⬛", callback_data=f"cas_{user_id}_{idx}"))
+            keyboard_rows.append(row)
+        
+        await msg.edit_text(
+            f" Ставка: <b>{game['amount']} $</b>\n"
+            f"Відкрийте ще {3 - opened_count} ячейки.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+            parse_mode="HTML"
+        )
+        await callback.answer()
+        return
+
+    # Коли відкрили рівно 3 ячейки — фінал гри!
+    # Відкриваємо всі 9 комірок у фінальному вигляді (як на скріншотах)
+    keyboard_rows = []
+    for r in range(3):
+        row = []
+        for c in range(3):
+            idx = r * 3 + c
+            # Показуємо смайлик, якщо він був у відкритих гравцем, інакше залишаємо чорний квадрат ⬛
+            if idx in game["opened"]:
+                row.append(InlineKeyboardButton(text=game["emojis"][idx], callback_data="noop"))
+            else:
+                row.append(InlineKeyboardButton(text="⬛", callback_data="noop"))
+        keyboard_rows.append(row)
+
+    final_markup = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+    # Витягуємо 3 відкриті емодзі гравця для підрахунку виграшу
+    chosen_emojis = [game["emojis"][i] for i in game["opened"]]
+    counts = Counter(chosen_emojis)
+    max_count = max(counts.values())
+
+    amount = game["amount"]
+    win = 0
+    result_text = ""
+
+    if max_count == 3:
+        win = amount * 3
+        crypto_balances[user_id] += win
+        result_text = f"Виграш (×3): <b>+{win} $</b>"
+    elif max_count == 2:
+        win = amount * 2
+        crypto_balances[user_id] += win
+        result_text = f"Виграш (×2): <b>+{win} $</b>"
+    else:
+        result_text = f"Лох, програш: <b>-{amount} $</b>"
+
+    current_balance = crypto_balances[user_id]
+
+    # Формуємо кінцевий текст повідомлення
+    final_text = (
+        f" Ставка: <b>{amount} $</b>\n"
+        f"Результат:\n\n"
+        f"{result_text}\n"
+        f" Баланс: <b>{current_balance} $</b>"
+    )
+
+    await msg.edit_text(final_text, reply_markup=final_markup, parse_mode="HTML")
+    
+    # Видаляємо гру з активних
+    del active_casino_games[msg.message_id]
+    await callback.answer()
+
+
+# ================== Решта команд (Старт, Баланс, Ферма, Топ, Адмін) ==================
 
 @router.message(CommandStart())
 async def start_command(message: Message):
     await message.reply(
         "Привіт\n"
         "Пиши ферма будеш бабло рубати.\n"
-        "Команди: /balance, /pay, /top",
+        "Команди: /balance, /top, ферма, /casino",
         parse_mode="HTML"
     )
 
@@ -55,7 +233,7 @@ async def start_command(message: Message):
 async def cmd_balance(message: Message):
     balance = crypto_balances[message.from_user.id]
     await message.answer(
-        f"💰 У тебе в кишені: <b>{balance}</b> Долларів",
+        f"💰 У тебе в кишені: <b>{balance}</b> доларів",
         parse_mode="HTML"
     )
 
@@ -63,7 +241,7 @@ async def cmd_balance(message: Message):
 @router.message(Command("give"))
 async def cmd_give(message: Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Тільки адмін може кидати бабки, не лізь.")
+        await message.answer("⛔ Тільки адмін може кидати бабки, від'їбись.")
         return
 
     args = message.text.split()
@@ -99,12 +277,10 @@ async def cmd_give(message: Message):
     crypto_balances[target_id] += amount
 
     await message.answer(
-        f"✅ Кинув <b>{amount}</b> долларів на {target_name}\n"
+        f"✅ Кинув <b>{amount}</b> доларів на {target_name}\n"
         f"Тепер у нього: {crypto_balances[target_id]}",
         parse_mode="HTML"
     )
-
-
 
 
 @router.message(F.text.lower() == "ферма")
@@ -112,7 +288,6 @@ async def ferma(message: Message):
     user_id = message.from_user.id
     now = time.time()
 
-    # Перевірка кулдауну
     if user_id in last_farm_time:
         left = FARM_COOLDOWN - (now - last_farm_time[user_id])
         if left > 0:
@@ -129,7 +304,7 @@ async def ferma(message: Message):
     else:
         crypto_balances[user_id] += bablo
         await message.answer(
-            f"💰 Заробив <b>{bablo}</b> долларів!\n"
+            f"💰 Заробив <b>{bablo}</b> доларів!\n"
             f"Тепер у тебе: {crypto_balances[user_id]}",
             parse_mode="HTML"
         )
@@ -144,7 +319,7 @@ async def cmd_top(message: Message):
     sorted_users = sorted(crypto_balances.items(), key=lambda x: x[1], reverse=True)[:10]
     
     text = "🏆 <b>Топ бариг:</b>\n\n"
-    medals = ["🥇", "🥈", "🥉"] + ["🔹"] * 7
+    medals = ["🥇", "🥈", "🥉"] + ["🔹"] * 12
 
     for i, (user_id, balance) in enumerate(sorted_users):
         try:

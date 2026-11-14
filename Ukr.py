@@ -8,7 +8,8 @@ import asyncio
 import os
 import random
 import time
-from collections import defaultdict, Counter
+from collections import Counter
+from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -26,6 +27,7 @@ def run_flask():
 
 # ================== Конфіг ==================
 TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URL = os.getenv("MONGO_URL")
 GROUP_ID = -1002128624256
 ADMIN_ID = 1876083446
 
@@ -33,13 +35,35 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 
-crypto_balances = defaultdict(int)
-last_farm_time = {}
+# Подключение к MongoDB Atlas
+mongo_client = AsyncIOMotorClient(MONGO_URL)
+db = mongo_client["casino_bot_db"]
+users_collection = db["users"]
 
+last_farm_time = {}
 FARM_COOLDOWN = 3600  # 1 година
 
 # Сховище для активних ігор у казино: {message_id: game_data}
 active_casino_games = {}
+
+
+# ================== Функції для роботи з MongoDB ==================
+
+async def get_balance(user_id: int) -> int:
+    user = await users_collection.find_one({"user_id": user_id})
+    if user is None:
+        # Если юзера нет в базе, создаем с балансом 0
+        await users_collection.insert_one({"user_id": user_id, "balance": 0})
+        return 0
+    return user["balance"]
+
+async def update_balance(user_id: int, delta: int):
+    # Гарантируем, что документ существует перед обновлением
+    await get_balance(user_id)
+    await users_collection.update_one(
+        {"user_id": user_id},
+        {"$inc": {"balance": delta}}
+    )
 
 
 # ================== Команди казино ==================
@@ -63,20 +87,19 @@ async def cmd_casino(message: Message, command: CommandObject):
         await message.answer("Сума повинна бути числом.")
         return
 
-    if amount < 10:
-        await message.answer("Мінімальна ставка — від 10$!")
+    if amount < 1:
+        await message.answer("Мінімальна ставка — від 1$!")
         return
 
-    balance = crypto_balances.get(user_id, 0)
+    balance = await get_balance(user_id)
     if balance < amount:
         await message.answer(f"Недостаточно доларів. У тебе: {balance}")
         return
 
-    # Спиסת ставка одразу
-    crypto_balances[user_id] = balance - amount
+    # Спишаем ставку
+    await update_balance(user_id, -amount)
 
-    # Генеруємо набір із 9 смайликів згідно з твоїм правилом:
-    # 3 одного, 2 другого, 2 третього, 1 четвертого, 1 п'ятого
+    # Генеруємо набір із 9 смайликів
     pool_templates = [
         ("😂", "😂", "😂"),  # 3
         ("😒", "😒"),        # 2
@@ -88,9 +111,8 @@ async def cmd_casino(message: Message, command: CommandObject):
     for item in pool_templates:
         all_emojis.extend(item)
     
-    random.shuffle(all_emojis)  # Перемішуємо для випадкового розташування у сітці 3x3
+    random.shuffle(all_emojis)
 
-    # Створюємо клавіатуру 3х3 з чорними квадратами
     keyboard_rows = []
     for r in range(3):
         row = []
@@ -108,12 +130,11 @@ async def cmd_casino(message: Message, command: CommandObject):
         parse_mode="HTML"
     )
 
-    # Зберігаємо дані гри
     active_casino_games[sent_msg.message_id] = {
         "user_id": user_id,
         "amount": amount,
-        "emojis": all_emojis,  # прихована матриця 9 емодзі
-        "opened": set()        # які індекси вже відкрив гравець
+        "emojis": all_emojis,
+        "opened": set()
     }
 
 
@@ -125,7 +146,7 @@ async def process_casino_click(callback: CallbackQuery):
     user_id = callback.from_user.id
 
     if user_id != owner_id:
-        await callback.answer("Це не твоя гра, йолоп!", show_alert=True)
+        await callback.answer("Це не твоя гра, братан!", show_alert=True)
         return
 
     msg = callback.message
@@ -142,7 +163,6 @@ async def process_casino_click(callback: CallbackQuery):
     game["opened"].add(cell_idx)
     opened_count = len(game["opened"])
 
-    # Якщо відкрив менше 3 ячеєк — оновлюємо сітку (показуємо відкриті та закриті)
     if opened_count < 3:
         keyboard_rows = []
         for r in range(3):
@@ -164,14 +184,11 @@ async def process_casino_click(callback: CallbackQuery):
         await callback.answer()
         return
 
-    # Коли відкрили рівно 3 ячейки — фінал гри!
-    # Відкриваємо всі 9 комірок у фінальному вигляді (як на скріншотах)
     keyboard_rows = []
     for r in range(3):
         row = []
         for c in range(3):
             idx = r * 3 + c
-            # Показуємо смайлик, якщо він був у відкритих гравцем, інакше залишаємо чорний квадрат ⬛
             if idx in game["opened"]:
                 row.append(InlineKeyboardButton(text=game["emojis"][idx], callback_data="noop"))
             else:
@@ -180,7 +197,6 @@ async def process_casino_click(callback: CallbackQuery):
 
     final_markup = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
-    # Витягуємо 3 відкриті емодзі гравця для підрахунку виграшу
     chosen_emojis = [game["emojis"][i] for i in game["opened"]]
     counts = Counter(chosen_emojis)
     max_count = max(counts.values())
@@ -191,18 +207,17 @@ async def process_casino_click(callback: CallbackQuery):
 
     if max_count == 3:
         win = amount * 3
-        crypto_balances[user_id] += win
+        await update_balance(user_id, win)
         result_text = f"Виграш (×3): <b>+{win} $</b>"
     elif max_count == 2:
         win = amount * 2
-        crypto_balances[user_id] += win
+        await update_balance(user_id, win)
         result_text = f"Виграш (×2): <b>+{win} $</b>"
     else:
-        result_text = f"Лох, програш: <b>-{amount} $</b>"
+        result_text = f"Програш: <b>-{amount} $</b>"
 
-    current_balance = crypto_balances[user_id]
+    current_balance = await get_balance(user_id)
 
-    # Формуємо кінцевий текст повідомлення
     final_text = (
         f" Ставка: <b>{amount} $</b>\n"
         f"Результат:\n\n"
@@ -212,12 +227,11 @@ async def process_casino_click(callback: CallbackQuery):
 
     await msg.edit_text(final_text, reply_markup=final_markup, parse_mode="HTML")
     
-    # Видаляємо гру з активних
     del active_casino_games[msg.message_id]
     await callback.answer()
 
 
-# ================== Решта команд (Старт, Баланс, Ферма, Топ, Адмін) ==================
+# ================== Решта команд ==================
 
 @router.message(CommandStart())
 async def start_command(message: Message):
@@ -231,7 +245,7 @@ async def start_command(message: Message):
 
 @router.message(Command("balance"))
 async def cmd_balance(message: Message):
-    balance = crypto_balances[message.from_user.id]
+    balance = await get_balance(message.from_user.id)
     await message.answer(
         f"💰 У тебе в кишені: <b>{balance}</b> доларів",
         parse_mode="HTML"
@@ -241,7 +255,7 @@ async def cmd_balance(message: Message):
 @router.message(Command("give"))
 async def cmd_give(message: Message):
     if message.from_user.id != ADMIN_ID:
-        await message.answer("⛔ Тільки адмін може кидати бабки, від'їбись.")
+        await message.answer("⛔ Тільки адмін може кидати бабки, не лізь.")
         return
 
     args = message.text.split()
@@ -274,11 +288,12 @@ async def cmd_give(message: Message):
         await message.answer("Кількість має бути більше нуля.")
         return
 
-    crypto_balances[target_id] += amount
+    await update_balance(target_id, amount)
+    new_bal = await get_balance(target_id)
 
     await message.answer(
         f"✅ Кинув <b>{amount}</b> доларів на {target_name}\n"
-        f"Тепер у нього: {crypto_balances[target_id]}",
+        f"Тепер у нього: {new_bal}",
         parse_mode="HTML"
     )
 
@@ -302,26 +317,31 @@ async def ferma(message: Message):
     if bablo == 0:
         await message.answer("Ніхуя не випало 😅 Спробуй пізніше")
     else:
-        crypto_balances[user_id] += bablo
+        await update_balance(user_id, bablo)
+        new_bal = await get_balance(user_id)
         await message.answer(
             f"💰 Заробив <b>{bablo}</b> доларів!\n"
-            f"Тепер у тебе: {crypto_balances[user_id]}",
+            f"Тепер у тебе: {new_bal}",
             parse_mode="HTML"
         )
 
 
 @router.message(Command("top"))
 async def cmd_top(message: Message):
-    if not crypto_balances:
+    # Достаем топ-10 пользователей, отсортированных по балансу
+    cursor = users_collection.find().sort("balance", -1).limit(10)
+    top_users = await cursor.to_list(length=10)
+
+    if not top_users:
         await message.answer("Поки ніхто нічого не має 🤷‍♂️")
         return
-
-    sorted_users = sorted(crypto_balances.items(), key=lambda x: x[1], reverse=True)[:10]
     
     text = "🏆 <b>Топ бариг:</b>\n\n"
-    medals = ["🥇", "🥈", "🥉"] + ["🔹"] * 12
+    medals = ["🥇", "🥈", "🥉"] + ["🔹"] * 7
 
-    for i, (user_id, balance) in enumerate(sorted_users):
+    for i, user_data in enumerate(top_users):
+        user_id = user_data["user_id"]
+        balance = user_data["balance"]
         try:
             user = await bot.get_chat(user_id)
             name = user.first_name or str(user_id)
@@ -378,9 +398,14 @@ async def admin_send_id(message: Message, command: CommandObject):
 dp.include_router(router)
 
 async def main():
-    print("Бот стартує...")
+    print("Бот стартує з MongoDB Atlas...")
     await dp.start_polling(bot, skip_updates=True)
 
+if __name__ == "__main__":
+    t = Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+    asyncio.run(main())
 if __name__ == "__main__":
     t = Thread(target=run_flask)
     t.daemon = True

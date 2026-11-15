@@ -283,10 +283,6 @@ async def cmd_give(message: Message):
         )
         return
 
-    if amount <= 0:
-        await message.answer("Кількість має бути більше нуля.")
-        return
-
     await update_balance(target_id, amount)
     new_bal = await get_balance(target_id)
 

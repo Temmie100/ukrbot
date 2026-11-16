@@ -56,7 +56,7 @@ ITEMS = {
     "cocaine":   {"name": "Кокаїн",    "seed_price": 120, "base_avg": 140, "fluct": 40},
 }
 
-CASINO_BETS = [1, 2, 3]
+CASINO_BETS = [10, 50, 300]
 CASINO_PRICE = 300
 PROTECTION_PRICE = 150
 
@@ -760,9 +760,7 @@ async def cmd_give(message: Message):
         await message.answer("Формат: /give 100 (реплаєм) або /give ID 100")
         return
 
-    if amount <= 0:
-        await message.answer("Тільки додатні числа")
-        return
+
 
     await update_balance(target_id, amount)
     new_bal = await get_balance(target_id)

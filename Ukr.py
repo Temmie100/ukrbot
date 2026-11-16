@@ -8,10 +8,10 @@ import asyncio
 import os
 import random
 import time
-from datetime import datetime, timedelta
 from collections import Counter
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
+from bson import ObjectId
 
 load_dotenv()
 
@@ -46,7 +46,6 @@ settings_collection = db["settings"]
 last_farm_time = {}
 FARM_COOLDOWN = 3600
 
-# Активні ігри казино (короткоживучі)
 active_casino_games = {}
 
 # ================== Константи ==================
@@ -57,8 +56,8 @@ ITEMS = {
     "cocaine":   {"name": "Кокаїн",    "seed_price": 120, "base_avg": 140, "fluct": 40},
 }
 
-CASINO_BETS = [10, 50, 300]          # потім заміниш
-CASINO_PRICE = 300               # потім заміниш
+CASINO_BETS = [1, 2, 3]
+CASINO_PRICE = 300
 PROTECTION_PRICE = 150
 
 # ================== Допоміжні функції ==================
@@ -160,7 +159,7 @@ async def start_command(message: Message):
         "/inv — інвентар\n"
         "/market — дошка оголошень\n"
         "/casino — казино\n"
-        "ферма — заробити бабло\n"
+        "ферма — бабло рубати\n"
         "/top — топ бариг",
         parse_mode="HTML"
     )
@@ -171,7 +170,7 @@ async def start_command(message: Message):
 async def cmd_balance(message: Message):
     user_id = message.from_user.id
     await ensure_user(user_id)
-    await try_steal(user_id)  # перевірка вора
+    await try_steal(user_id)
     balance = await get_balance(user_id)
     user = await users_collection.find_one({"user_id": user_id})
     prot = "✅ Є охорона" if user.get("has_protection") else "❌ Немає охорони"
@@ -196,7 +195,7 @@ async def ferma(message: Message):
         if left > 0:
             minutes = int(left // 60)
             seconds = int(left % 60)
-            await message.answer(f"⏳ Ще рано. Чекай {minutes} хв {seconds} сек")
+            await message.answer(f"⏳ Ще рано, бля. Чекай {minutes} хв {seconds} сек")
             return
 
     bablo = random.randint(0, 10)
@@ -243,24 +242,23 @@ async def buy_seed(callback: CallbackQuery):
     user_id = callback.from_user.id
     item = callback.data.replace("buy_seed_", "")
     if item not in ITEMS:
-        await callback.answer("Невідомий товар", show_alert=True)
+        await callback.answer("Хуйня якась", show_alert=True)
         return
 
     price = ITEMS[item]["seed_price"]
     balance = await get_balance(user_id)
 
     if balance < price:
-        await callback.answer("Недостатньо грошей", show_alert=True)
+        await callback.answer("Немає бабла, бля", show_alert=True)
         return
 
     await update_balance(user_id, -price)
     await add_item(user_id, item, frozen=False, amount=1)
 
-    await callback.answer(f"Купив {ITEMS[item]['name']}! Врожай вже в інвентарі")
+    await callback.answer()
     await callback.message.answer(
-        f"✅ Ти купив насіння {ITEMS[item]['name']} за {price}$\n"
-        f"Врожай одразу додано в інвентар.\n"
-        f"Дивись /inv"
+        f"✅ Купив {ITEMS[item]['name']} за {price}$\n"
+        f"Врожай вже в інвентарі. Дивись /inv"
     )
 
 @router.callback_query(F.data == "buy_protection")
@@ -269,12 +267,12 @@ async def buy_protection(callback: CallbackQuery):
     user = await ensure_user(user_id)
 
     if user.get("has_protection"):
-        await callback.answer("У тебе вже є охорона", show_alert=True)
+        await callback.answer("У тебе вже є охорона, нахуй повторно", show_alert=True)
         return
 
     balance = await get_balance(user_id)
     if balance < PROTECTION_PRICE:
-        await callback.answer("Недостатньо грошей", show_alert=True)
+        await callback.answer("Не вистачає бабла", show_alert=True)
         return
 
     await update_balance(user_id, -PROTECTION_PRICE)
@@ -282,8 +280,8 @@ async def buy_protection(callback: CallbackQuery):
         {"user_id": user_id},
         {"$set": {"has_protection": True}}
     )
-    await callback.answer("Охорону куплено!")
-    await callback.message.answer("🛡 Охорона куплена назавжди. Тепер вор тебе не чіпає.")
+    await callback.answer()
+    await callback.message.answer("🛡 Охорону купив. Тепер вор тебе не дістане.")
 
 @router.callback_query(F.data == "buy_casino")
 async def buy_casino(callback: CallbackQuery):
@@ -291,20 +289,20 @@ async def buy_casino(callback: CallbackQuery):
     casino = await get_casino()
 
     if casino.get("owner_id"):
-        await callback.answer("Казино вже куплено кимось", show_alert=True)
+        await callback.answer("Казино вже хтось купив", show_alert=True)
         return
 
     balance = await get_balance(user_id)
     if balance < CASINO_PRICE:
-        await callback.answer("Недостатньо грошей", show_alert=True)
+        await callback.answer("Немає стількох бабок", show_alert=True)
         return
 
     await update_balance(user_id, -CASINO_PRICE)
     await set_casino_owner(user_id)
-    await callback.answer("Ти став власником казино!")
+    await callback.answer()
     await callback.message.answer(
-        f"🎰 Вітаю! Ти купив казино за {CASINO_PRICE}$.\n"
-        f"Тепер всі ставки йдуть тобі, а виграші знімаються з твого балансу."
+        f"🎰 Вітаю, ти купив казино за {CASINO_PRICE}$.\n"
+        f"Тепер всі лохи грають на тебе."
     )
 
 # ================== Інвентар ==================
@@ -316,7 +314,6 @@ async def cmd_inv(message: Message):
 
     text = "🎒 <b>Твій інвентар:</b>\n\n"
     has_anything = False
-
     buttons = []
 
     for key, data in ITEMS.items():
@@ -329,52 +326,30 @@ async def cmd_inv(message: Message):
             if normal > 0:
                 text += f"  • Звичайний: {normal}\n"
                 buttons.append([
-                    InlineKeyboardButton(
-                        text=f"Продати боту {data['name']}",
-                        callback_data=f"sellbot_{key}_0"
-                    ),
-                    InlineKeyboardButton(
-                        text=f"Заморозити {data['name']}",
-                        callback_data=f"freeze_{key}"
-                    )
+                    InlineKeyboardButton(text=f"Продати боту {data['name']}", callback_data=f"sellbot_{key}"),
+                    InlineKeyboardButton(text=f"Заморозити", callback_data=f"freeze_{key}")
+                ])
+                buttons.append([
+                    InlineKeyboardButton(text=f"На дошку {data['name']}", callback_data=f"market_add_{key}_0")
                 ])
             if frozen > 0:
                 text += f"  • Заморожений: {frozen}\n"
                 buttons.append([
-                    InlineKeyboardButton(
-                        text=f"Розморозити {data['name']}",
-                        callback_data=f"unfreeze_{key}"
-                    ),
-                    InlineKeyboardButton(
-                        text=f"На дошку {data['name']} (зам)",
-                        callback_data=f"market_add_{key}_1"
-                    )
+                    InlineKeyboardButton(text=f"Розморозити", callback_data=f"unfreeze_{key}"),
+                    InlineKeyboardButton(text=f"На дошку (зам)", callback_data=f"market_add_{key}_1")
                 ])
 
     if not has_anything:
-        text += "Порожньо 🤷‍♂️"
-
-    # Кнопки для виставлення звичайного врожаю на дошку
-    for key, data in ITEMS.items():
-        normal = inv.get(key, {}).get("normal", 0)
-        if normal > 0:
-            buttons.append([
-                InlineKeyboardButton(
-                    text=f"На дошку {data['name']}",
-                    callback_data=f"market_add_{key}_0"
-                )
-            ])
+        text += "Порожньо, бля 🤷‍♂️"
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
     await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("sellbot_"))
 async def sell_to_bot(callback: CallbackQuery):
-    parts = callback.data.split("_")
-    item = parts[1]
-    # frozen flag not used here, always normal
-
+    item = callback.data.replace("sellbot_", "")
     user_id = callback.from_user.id
+
     success = await remove_item(user_id, item, frozen=False, amount=1)
     if not success:
         await callback.answer("Немає такого врожаю", show_alert=True)
@@ -400,8 +375,8 @@ async def freeze_item(callback: CallbackQuery):
         return
 
     await add_item(user_id, item, frozen=True, amount=1)
-    await callback.answer("Заморожено!")
-    await callback.message.answer(f"❄️ {ITEMS[item]['name']} заморожено. Лежить в інвентарі.")
+    await callback.answer()
+    await callback.message.answer(f"❄️ {ITEMS[item]['name']} заморозив.")
 
 @router.callback_query(F.data.startswith("unfreeze_"))
 async def unfreeze_item(callback: CallbackQuery):
@@ -414,8 +389,8 @@ async def unfreeze_item(callback: CallbackQuery):
         return
 
     await add_item(user_id, item, frozen=False, amount=1)
-    await callback.answer("Розморожено!")
-    await callback.message.answer(f"🌡 {ITEMS[item]['name']} розморожено.")
+    await callback.answer()
+    await callback.message.answer(f"🌡 {ITEMS[item]['name']} розморозив.")
 
 # ================== Дошка оголошень ==================
 
@@ -424,7 +399,7 @@ async def cmd_market(message: Message):
     listings = await market_collection.find().sort("created_at", -1).limit(15).to_list(15)
 
     if not listings:
-        await message.answer("Дошка оголошень порожня.")
+        await message.answer("Дошка пуста.")
         return
 
     text = "📋 <b>Дошка оголошень</b>\n\n"
@@ -434,10 +409,8 @@ async def cmd_market(message: Message):
         item_name = ITEMS[listing["item"]]["name"]
         frozen_text = " (зам)" if listing.get("frozen") else ""
         seller_name = listing.get("seller_name", str(listing["seller_id"]))
-        text += (
-            f"• {item_name}{frozen_text} — <b>{listing['price']}$</b>\n"
-            f"  від {seller_name}\n\n"
-        )
+        text += f"• {item_name}{frozen_text} — <b>{listing['price']}$</b> від {seller_name}\n"
+
         buttons.append([
             InlineKeyboardButton(
                 text=f"Купити за {listing['price']}$",
@@ -450,18 +423,12 @@ async def cmd_market(message: Message):
 
 @router.callback_query(F.data.startswith("market_add_"))
 async def market_add(callback: CallbackQuery):
-    # market_add_{item}_{frozen_flag}
     parts = callback.data.split("_")
     item = parts[2]
     frozen = parts[3] == "1"
-    user_id = callback.from_user.id
-
-    # Просимо ціну наступним повідомленням — спрощений варіант
-    # Для простоти зараз ставимо фіксовану логіку через окрему команду
     await callback.answer()
     await callback.message.answer(
-        f"Щоб виставити {ITEMS[item]['name']}{' (зам)' if frozen else ''} на дошку, "
-        f"напиши команду:\n"
+        f"Щоб виставити {ITEMS[item]['name']}{' (зам)' if frozen else ''}:\n"
         f"<code>/sellmarket {item} {'1' if frozen else '0'} ціна</code>\n\n"
         f"Приклад: <code>/sellmarket {item} {'1' if frozen else '0'} 25</code>",
         parse_mode="HTML"
@@ -480,19 +447,19 @@ async def cmd_sellmarket(message: Message, command: CommandObject):
         frozen = parts[1] == "1"
         price = int(parts[2])
     except:
-        await message.answer("Невірний формат")
+        await message.answer("Невірний формат, бля")
         return
 
     if item not in ITEMS:
         await message.answer("Невідомий предмет")
         return
     if price < 1:
-        await message.answer("Ціна має бути більше 0")
+        await message.answer("Ціна від 1$")
         return
 
     success = await remove_item(user_id, item, frozen=frozen, amount=1)
     if not success:
-        await message.answer("У тебе немає цього врожаю")
+        await message.answer("У тебе немає цього лайна")
         return
 
     await market_collection.insert_one({
@@ -504,14 +471,13 @@ async def cmd_sellmarket(message: Message, command: CommandObject):
         "created_at": time.time()
     })
 
-    await message.answer(f"✅ Виставив {ITEMS[item]['name']} за {price}$ на дошку.")
+    await message.answer(f"✅ Виставив {ITEMS[item]['name']} за {price}$")
 
 @router.callback_query(F.data.startswith("market_buy_"))
 async def market_buy(callback: CallbackQuery):
     listing_id = callback.data.replace("market_buy_", "")
     buyer_id = callback.from_user.id
 
-    from bson import ObjectId
     try:
         listing = await market_collection.find_one({"_id": ObjectId(listing_id)})
     except:
@@ -519,40 +485,33 @@ async def market_buy(callback: CallbackQuery):
         return
 
     if not listing:
-        await callback.answer("Вже купили або видалено", show_alert=True)
+        await callback.answer("Вже хтось купив", show_alert=True)
         return
 
     if listing["seller_id"] == buyer_id:
-        await callback.answer("Не можна купити своє", show_alert=True)
+        await callback.answer("Своє купувати не можна", show_alert=True)
         return
 
     price = listing["price"]
     balance = await get_balance(buyer_id)
     if balance < price:
-        await callback.answer("Недостатньо грошей", show_alert=True)
+        await callback.answer("Не вистачає бабла", show_alert=True)
         return
 
-    # Знімаємо гроші і передаємо товар
     await update_balance(buyer_id, -price)
     await update_balance(listing["seller_id"], price)
     await add_item(buyer_id, listing["item"], frozen=listing.get("frozen", False), amount=1)
-
     await market_collection.delete_one({"_id": listing["_id"]})
 
-    await callback.answer("Куплено!")
-    await callback.message.answer(
-        f"✅ Ти купив {ITEMS[listing['item']]['name']} за {price}$"
-    )
+    await callback.answer()
+    await callback.message.answer(f"✅ Купив {ITEMS[listing['item']]['name']} за {price}$")
 
     try:
-        await bot.send_message(
-            listing["seller_id"],
-            f"💰 Твій {ITEMS[listing['item']]['name']} купили за {price}$"
-        )
+        await bot.send_message(listing["seller_id"], f"💰 Хтось купив твій товар за {price}$")
     except:
         pass
 
-# ================== Казино ==================
+# ================== Казино (з жорстким захистом) ==================
 
 @router.message(Command("casino"))
 async def cmd_casino(message: Message):
@@ -561,19 +520,17 @@ async def cmd_casino(message: Message):
 
     casino = await get_casino()
     if not casino.get("owner_id"):
-        await message.answer("Казино зараз нікому не належить. Купи його в /shop")
+        await message.answer("Казино зараз нікому не належить. Купи в /shop")
         return
 
-    # Показуємо варіанти ставок
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Ставка {bet}$", callback_data=f"casinobet_{bet}")]
         for bet in CASINO_BETS
     ])
 
-    owner = casino["owner_id"]
     await message.answer(
         f"🎰 <b>Казино</b>\n"
-        f"Власник: <code>{owner}</code>\n\n"
+        f"Власник: <code>{casino['owner_id']}</code>\n\n"
         f"Вибери ставку:",
         reply_markup=kb,
         parse_mode="HTML"
@@ -585,24 +542,22 @@ async def casino_choose_bet(callback: CallbackQuery):
     bet = int(callback.data.replace("casinobet_", ""))
 
     if bet not in CASINO_BETS:
-        await callback.answer("Невірний варіант", show_alert=True)
+        await callback.answer("Хуйня ставка", show_alert=True)
         return
 
     balance = await get_balance(user_id)
     if balance < bet:
-        await callback.answer("Недостатньо грошей", show_alert=True)
+        await callback.answer("Немає стількох бабок", show_alert=True)
         return
 
     casino = await get_casino()
     owner_id = casino.get("owner_id")
     if not owner_id:
-        await callback.answer("Казино більше не активне", show_alert=True)
+        await callback.answer("Казино вже не працює", show_alert=True)
         return
 
-    # Знімаємо ставку одразу
     await update_balance(user_id, -bet)
 
-    # Генеруємо поле
     pool = ["😂"] * 3 + ["😒"] * 2 + ["👍"] * 2 + ["🙊"] * 2
     random.shuffle(pool)
 
@@ -628,7 +583,8 @@ async def casino_choose_bet(callback: CallbackQuery):
         "owner_id": owner_id,
         "emojis": pool,
         "opened": set(),
-        "finished": False
+        "finished": False,
+        "locked": False
     }
     await callback.answer()
 
@@ -640,110 +596,111 @@ async def casino_open_cell(callback: CallbackQuery):
     user_id = callback.from_user.id
 
     if user_id != owner_of_game:
-        await callback.answer("Це не твоя гра!", show_alert=True)
+        await callback.answer("Це не твоя гра, бля!", show_alert=True)
         return
 
     msg_id = callback.message.message_id
     game = active_casino_games.get(msg_id)
 
-    if not game or game.get("finished"):
+    if not game:
         await callback.answer("Гра вже закінчена", show_alert=True)
         return
 
-    if cell_idx in game["opened"]:
-        await callback.answer("Вже відкрито")
-        return
-
-    # Захист від лагів — одразу додаємо
-    game["opened"].add(cell_idx)
-
-    if len(game["opened"]) > 3:
-        await callback.answer("Вже відкрито 3 клітинки")
-        return
-
-    opened_count = len(game["opened"])
-
-    # Оновлюємо клавіатуру
-    keyboard_rows = []
-    for r in range(3):
-        row = []
-        for c in range(3):
-            idx = r * 3 + c
-            if idx in game["opened"]:
-                row.append(InlineKeyboardButton(text=game["emojis"][idx], callback_data="noop"))
-            else:
-                row.append(InlineKeyboardButton(text="⬛", callback_data=f"casopen_{user_id}_{idx}"))
-        keyboard_rows.append(row)
-
-    if opened_count < 3:
-        await callback.message.edit_text(
-            f"Ставка: <b>{game['bet']}$</b>\nВідкрий ще {3 - opened_count}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
-            parse_mode="HTML"
-        )
+    # ЖОРСТКИЙ ЗАХИСТ
+    if game.get("finished") or game.get("locked"):
         await callback.answer()
         return
 
-    # === Гра закінчена ===
-    game["finished"] = True
+    game["locked"] = True
 
-    chosen = [game["emojis"][i] for i in game["opened"]]
-    counts = Counter(chosen)
-    max_count = max(counts.values())
+    try:
+        if cell_idx in game["opened"]:
+            await callback.answer("Вже відкрито")
+            return
 
-    bet = game["bet"]
-    owner_id = game["owner_id"]
-    win_amount = 0
-    result_text = ""
+        game["opened"].add(cell_idx)
+        opened_count = len(game["opened"])
 
-    if max_count == 3:
-        win_amount = bet * 3
-        result_text = f"🎉 Джекпот ×3! +{win_amount}$"
-    elif max_count == 2:
-        win_amount = bet * 2
-        result_text = f"🔥 Виграш ×2! +{win_amount}$"
-    else:
-        result_text = f"💸 Програш -{bet}$"
+        if opened_count > 3:
+            await callback.answer()
+            return
 
-    # Розрахунки з власником
-    if win_amount > 0:
-        owner_balance = await get_balance(owner_id)
-        if owner_balance >= win_amount:
-            await update_balance(owner_id, -win_amount)
-            await update_balance(user_id, win_amount)
+        keyboard_rows = []
+        for r in range(3):
+            row = []
+            for c in range(3):
+                idx = r * 3 + c
+                if idx in game["opened"]:
+                    row.append(InlineKeyboardButton(text=game["emojis"][idx], callback_data="noop"))
+                else:
+                    if opened_count >= 3:
+                        row.append(InlineKeyboardButton(text="⬛", callback_data="noop"))
+                    else:
+                        row.append(InlineKeyboardButton(text="⬛", callback_data=f"casopen_{user_id}_{idx}"))
+            keyboard_rows.append(row)
+
+        markup = InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
+
+        if opened_count < 3:
+            await callback.message.edit_text(
+                f"Ставка: <b>{game['bet']}$</b>\nВідкрий ще {3 - opened_count}",
+                reply_markup=markup,
+                parse_mode="HTML"
+            )
+            await callback.answer()
+            return
+
+        # Гра закінчена
+        game["finished"] = True
+
+        chosen = [game["emojis"][i] for i in game["opened"]]
+        counts = Counter(chosen)
+        max_count = max(counts.values())
+
+        bet = game["bet"]
+        owner_id = game["owner_id"]
+        win_amount = 0
+        result_text = ""
+
+        if max_count == 3:
+            win_amount = bet * 3
+            result_text = f"🎉 Джекпот ×3! +{win_amount}$"
+        elif max_count == 2:
+            win_amount = bet * 2
+            result_text = f"🔥 Виграш ×2! +{win_amount}$"
         else:
-            # Власник не може виплатити → казино повертається в магазин
-            await update_balance(user_id, win_amount)  # все одно даємо виграш гравцю (з повітря)
-            await set_casino_owner(None)
-            result_text += "\n\n⚠️ У власника закінчились гроші. Казино повернулось в магазин!"
-    else:
-        # Програш — гроші вже зняті з гравця, додаємо власнику
-        await update_balance(owner_id, bet)
+            result_text = f"💸 Програв, лох -{bet}$"
 
-    # Фінальна клавіатура (все відкрито або ні)
-    final_rows = []
-    for r in range(3):
-        row = []
-        for c in range(3):
-            idx = r * 3 + c
-            if idx in game["opened"]:
-                row.append(InlineKeyboardButton(text=game["emojis"][idx], callback_data="noop"))
+        if win_amount > 0:
+            owner_balance = await get_balance(owner_id)
+            if owner_balance >= win_amount:
+                await update_balance(owner_id, -win_amount)
+                await update_balance(user_id, win_amount)
             else:
-                row.append(InlineKeyboardButton(text="⬛", callback_data="noop"))
-        final_rows.append(row)
+                await update_balance(user_id, win_amount)
+                await set_casino_owner(None)
+                result_text += "\n\n⚠️ У власника кінчились бабки. Казино повернулось в магазин!"
+        else:
+            await update_balance(owner_id, bet)
 
-    current_balance = await get_balance(user_id)
+        current_balance = await get_balance(user_id)
 
-    await callback.message.edit_text(
-        f"Ставка: <b>{bet}$</b>\n"
-        f"{result_text}\n\n"
-        f"Твій баланс: <b>{current_balance}$</b>",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=final_rows),
-        parse_mode="HTML"
-    )
+        await callback.message.edit_text(
+            f"Ставка: <b>{bet}$</b>\n"
+            f"{result_text}\n\n"
+            f"Твій баланс: <b>{current_balance}$</b>",
+            reply_markup=markup,
+            parse_mode="HTML"
+        )
 
-    del active_casino_games[msg_id]
-    await callback.answer()
+        if msg_id in active_casino_games:
+            del active_casino_games[msg_id]
+
+        await callback.answer()
+
+    finally:
+        if msg_id in active_casino_games and not active_casino_games[msg_id].get("finished"):
+            active_casino_games[msg_id]["locked"] = False
 
 @router.callback_query(F.data == "noop")
 async def noop_callback(callback: CallbackQuery):
@@ -815,13 +772,13 @@ async def cmd_give(message: Message):
 async def thief_start(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
-    end_time = time.time() + 2 * 24 * 3600  # 2 дні
+    end_time = time.time() + 2 * 24 * 3600
     await settings_collection.update_one(
         {"_id": "main"},
         {"$set": {"thief_end": end_time}},
         upsert=True
     )
-    await message.answer("🕵️ Вор активований на 2 дні")
+    await message.answer("🕵️ Вор вийшов на 2 дні")
 
 @router.message(Command("thief_stop"))
 async def thief_stop(message: Message):
@@ -831,10 +788,9 @@ async def thief_stop(message: Message):
         {"_id": "main"},
         {"$unset": {"thief_end": ""}}
     )
-    await message.answer("Вор зупинений")
+    await message.answer("Вор сховався")
 
 async def try_steal(user_id: int):
-    """Спроба вкрасти 20% якщо вор активний і немає охорони"""
     settings = await settings_collection.find_one({"_id": "main"})
     if not settings or "thief_end" not in settings:
         return
@@ -846,7 +802,7 @@ async def try_steal(user_id: int):
         return
 
     last = user.get("last_stolen_at", 0)
-    if time.time() - last < 20 * 3600:  # раз на ~20 годин
+    if time.time() - last < 20 * 3600:
         return
 
     balance = user["balance"]
@@ -865,13 +821,12 @@ async def try_steal(user_id: int):
         pass
 
 @router.message(Command("update_prices"))
-async def update_prices(message: Message):
+async def update_prices_cmd(message: Message):
     if message.from_user.id != ADMIN_ID:
         return
 
     new_prices = {}
     for key, data in ITEMS.items():
-        # трохи рандомимо навколо бази
         change = random.randint(-data["fluct"], data["fluct"])
         new_prices[key] = max(1, data["base_avg"] + change)
 

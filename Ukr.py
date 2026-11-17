@@ -1902,6 +1902,21 @@ async def update_prices3(message: Message):
     )
     await message.answer(f"📈 Ціни на насіння впали, долар виріс!\n{new_seed_prices}")
 
+@router.message(Command("stop_dolary"))
+async def reset_prices_command(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    # Повертаємо базові ціни тільки для насіння
+    base_seed_prices = {k: v["seed_price"] for k, v in ITEMS.items()}
+
+    await settings_collection.update_one(
+        {"_id": "main"},
+        {"$set": {"seed_prices": base_seed_prices}},
+        upsert=True
+    )
+    await message.answer("🔄 Ціни на насіння стабілізовано!")
+
 @router.message(Command("update_prices"))
 async def update_prices(message: Message):
     if message.from_user.id != ADMIN_ID:

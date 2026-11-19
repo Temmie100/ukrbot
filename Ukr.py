@@ -310,6 +310,12 @@ async def try_bribe_callback(callback: CallbackQuery):
 
     del pending_arest[user_id]
 
+    # === ВАЖЛИВО: ставимо кулдаун одразу ===
+    await users_collection.update_one(
+        {"user_id": user_id},
+        {"$set": {"last_zaderjanie_at": time.time()}}
+    )
+
     roll = random.random()
     if roll < 0.25:
         # Не повезло
@@ -1721,19 +1727,24 @@ async def try_arest(user_id: int):
     if time.time() - last < 24 * 3600:
         return
 
-    # Перевірка адвоката
+# Перевірка адвоката
     if user.get("has_advocat"):
-        zashiti_mene = random.randint(1, 5)
-        if zashiti_mene >= 3:
-            await users_collection.update_one(
-                {"user_id": user_id},
-                {"$set": {"has_advocat": False}}
-            )
-            try:
-                await bot.send_message(user_id, "⚖️ Твій адвокат відмазав тебе від ментів, але його послуги закінчились.")
-            except Exception:
-                pass
-            return
+    zashiti_mene = random.randint(1, 5)
+    if zashiti_mene >= 3:
+        await users_collection.update_one(
+            {"user_id": user_id},
+            {
+                "$set": {
+                    "has_advocat": False,
+                    "last_zaderjanie_at": time.time()   # ← додав
+                }
+            }
+        )
+        try:
+            await bot.send_message(user_id, "⚖️ Твій адвокат відмазав тебе від ментів, але його послуги закінчились.")
+        except Exception:
+            pass
+        return
 
     # Ставимо в очікування вибору
     expire = time.time() + AREST_CHOICE_TIME

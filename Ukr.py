@@ -1729,22 +1729,22 @@ async def try_arest(user_id: int):
 
 # Перевірка адвоката
     if user.get("has_advocat"):
-    zashiti_mene = random.randint(1, 5)
-    if zashiti_mene >= 3:
-        await users_collection.update_one(
-            {"user_id": user_id},
-            {
-                "$set": {
-                    "has_advocat": False,
-                    "last_zaderjanie_at": time.time()   # ← додав
+        zashiti_mene = random.randint(1, 5)
+        if zashiti_mene >= 3:
+            await users_collection.update_one(
+                {"user_id": user_id},
+                {
+                    "$set": {
+                        "has_advocat": False,
+                        "last_zaderjanie_at": time.time()   # ← додав
+                    }
                 }
-            }
-        )
-        try:
-            await bot.send_message(user_id, "⚖️ Твій адвокат відмазав тебе від ментів, але його послуги закінчились.")
-        except Exception:
-            pass
-        return
+            )
+            try:
+                await bot.send_message(user_id, "⚖️ Твій адвокат відмазав тебе від ментів, але його послуги закінчились.")
+            except Exception:
+                pass
+            return
 
     # Ставимо в очікування вибору
     expire = time.time() + AREST_CHOICE_TIME

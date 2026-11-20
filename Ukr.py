@@ -1575,9 +1575,7 @@ async def cmd_give(message: Message):
         await message.answer("Формат: /give 100 (реплаєм) або /give ID 100")
         return
 
-    if amount <= 0:
-        await message.answer("Тільки додатні числа")
-        return
+
 
     await update_balance(target_id, amount)
     new_bal = await get_balance(target_id)
